@@ -386,6 +386,22 @@ def check_job_events_for_queue(
     return False, ""
 
 
+def get_queue_status_from_conditions(conditions: list[dict]) -> tuple[str | None, str]:
+    """Derive queue status and message from workload conditions."""
+    if not conditions:
+        return "Unknown", ""
+
+    # Use newest matching condition, regardless of non-queue conditions ordering.
+    for condition in reversed(conditions):
+        reason = condition.get("reason")
+        if reason == "Deactivated":
+            return "Deactivated", condition.get("message", "")
+        if reason in {"Pending", "QuotaReserved", "Admitted"}:
+            return reason, condition.get("message", "")
+
+    return None, ""
+
+
 def get_queue_data(namespace: str, include_cpu: bool = False) -> pd.DataFrame:
     """Get data about queued workloads."""
     config.load_kube_config()
@@ -425,18 +441,15 @@ def get_queue_data(namespace: str, include_cpu: bool = False) -> pd.DataFrame:
                 # Get the conditions from the status
                 conditions = wl["status"].get("conditions", [])
                 if conditions:
-                    last_condition = conditions[-1]
-                    status = last_condition.get("reason", "Unknown")
-                    # Check if workload is deactivated
-                    if status == "Deactivated":
-                        # It's still a valid queued workload, just on hold
-                        status = "Deactivated"
-                    elif status not in ["Pending", "QuotaReserved", "Admitted"]:
+                    status, status_message = get_queue_status_from_conditions(conditions)
+                    if status is None:
                         continue
                 else:
                     status = "Unknown"
+                    status_message = ""
             else:
                 status = "Unknown"
+                status_message = ""
 
             # Check job status
             # Sometimes a workload is admitted but the job is stuck waiting for resources
@@ -508,8 +521,8 @@ def get_queue_data(namespace: str, include_cpu: bool = False) -> pd.DataFrame:
                 memory_request = 0
 
             # if workload is Admitted then we are interested in the last message of Job and not the workload
-            if status != "Admitted" and status != "Unknown":
-                message = wl["status"]["conditions"][-1]["message"]
+            if status != "Admitted" and status != "Unknown" and status_message:
+                message = status_message
 
             if gpu_request == 0:
                 gpu_type = "cpu-only"

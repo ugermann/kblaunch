@@ -7,6 +7,7 @@ from kblaunch.plots import (
     get_default_metrics,
     get_gpu_metrics,
     get_pvc_data,
+    get_queue_data,
     print_gpu_total,
     print_job_stats,
     print_pvc_stats,
@@ -245,6 +246,104 @@ def test_get_pvc_data(mock_k8s_api, mock_namespace):
     assert row["job_name"] == "test-job"
     assert row["user_name"] == "test-user"
     assert row["size_gb"] == pytest.approx(40.0)
+
+
+def test_get_queue_data_uses_matching_condition_not_last():
+    """Queued workloads should be included even when PodsReady is the last condition."""
+    with (
+        patch("kblaunch.plots.config.load_kube_config"),
+        patch("kblaunch.plots.client.CustomObjectsApi") as mock_custom_api,
+        patch("kblaunch.plots.client.BatchV1Api") as mock_batch_api,
+        patch("kblaunch.plots.client.CoreV1Api"),
+        patch(
+            "kblaunch.plots.check_job_events_for_queue",
+            return_value=(True, "Waiting for events"),
+        ),
+    ):
+        common_container = {
+            "resources": {
+                "requests": {"cpu": "32", "memory": "640Gi"},
+                "limits": {
+                    "cpu": "32",
+                    "memory": "640Gi",
+                    "nvidia.com/gpu": "8",
+                },
+            }
+        }
+        common_template = {
+            "metadata": {"labels": {"eidf/user": "s2011847-eidf107"}},
+            "spec": {
+                "containers": [common_container],
+                "nodeSelector": {"nvidia.com/gpu.product": "NVIDIA-H200"},
+            },
+        }
+        workload_pending_last = {
+            "metadata": {
+                "name": "job-test-pending-last-11111",
+                "creationTimestamp": "2026-07-07T10:11:35Z",
+            },
+            "spec": {
+                "queueName": "eidf107ns-user-queue",
+                "priorityClassName": "batch-workload-priority",
+                "podSets": [{"template": common_template}],
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "type": "PodsReady",
+                        "reason": "PodsReady",
+                        "message": "Not all pods are ready or succeeded",
+                    },
+                    {
+                        "type": "QuotaReserved",
+                        "reason": "Pending",
+                        "message": "insufficient unused quota, 1 more needed",
+                    },
+                ]
+            },
+        }
+        workload_podsready_last = {
+            "metadata": {
+                "name": "job-test-podsready-last-22222",
+                "creationTimestamp": "2026-07-07T11:47:48Z",
+            },
+            "spec": {
+                "queueName": "eidf107ns-user-queue",
+                "priorityClassName": "batch-workload-priority",
+                "podSets": [{"template": common_template}],
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "type": "QuotaReserved",
+                        "reason": "Pending",
+                        "message": "insufficient unused quota, 8 more needed",
+                    },
+                    {
+                        "type": "PodsReady",
+                        "reason": "PodsReady",
+                        "message": "Not all pods are ready or succeeded",
+                    },
+                ]
+            },
+        }
+
+        mock_custom_api.return_value.list_namespaced_custom_object.return_value = {
+            "items": [workload_pending_last, workload_podsready_last]
+        }
+
+        mock_job = MagicMock()
+        mock_job.status.active = 0
+        mock_job.status.succeeded = 0
+        mock_job.status.conditions = []
+        mock_batch_api.return_value.read_namespaced_job.return_value = mock_job
+
+        df = get_queue_data(namespace="eidf107ns")
+
+    assert sorted(df["name"].tolist()) == ["test-pending-last", "test-podsready-last"]
+    messages = dict(zip(df["name"], df["message"]))
+    assert messages["test-pending-last"] == "insufficient unused quota, 1 more needed"
+    assert messages["test-podsready-last"] == "insufficient unused quota, 8 more needed"
 
 
 def test_print_pvc_stats(mock_k8s_api, mock_console, mock_namespace):
