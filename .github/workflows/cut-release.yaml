@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   create-release:
@@ -54,3 +55,10 @@ jobs:
             --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
+
+      - name: Trigger publish workflow
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yaml --ref "${{ github.ref_name }}"
