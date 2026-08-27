@@ -37,7 +37,12 @@
 
 import importlib.metadata
 
-__version__ = importlib.metadata.version("kblaunch")
+from importlib.metadata import PackageNotFoundError
+
+try:
+    __version__ = importlib.metadata.version("kblaunch")
+except PackageNotFoundError:
+    __version__ = "0.3.11"
 
 __all__ = [
     "setup",

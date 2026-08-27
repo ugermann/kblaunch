@@ -1,5 +1,6 @@
 import pandas as pd
 from kubernetes import client, config, stream
+from kubernetes.client.rest import ApiException
 from loguru import logger
 from rich.console import Console
 from rich.progress import (
@@ -203,6 +204,15 @@ def get_data(
                     except KeyError:
                         # If job-name label does not exist, fallback to pod metadata
                         username = "unknown"
+                    except ApiException as e:
+                        if e.status == 404:
+                            logger.debug(
+                                f"Job {job_name} not found while collecting pod {pod_name}; "
+                                "falling back to unknown user"
+                            )
+                            username = "unknown"
+                        else:
+                            raise
 
                 progress.update(
                     collect_task, advance=1, description=f"[cyan]Processing {pod_name}"

@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
+from kubernetes.client.rest import ApiException
 
 from kblaunch.plots import (
     get_data,
@@ -126,6 +127,23 @@ def test_get_data(mock_k8s_api, mock_nvidia_smi, mock_namespace):
     assert df.iloc[0]["username"] == "test-user"
     assert df.iloc[0]["gpu_name"] == "NVIDIA-A100-SXM4-40GB"
     assert bool(df.iloc[0]["interactive"]) is False  # Convert numpy bool to Python bool
+
+
+def test_get_data_ignores_deleted_job_lookup(mock_k8s_api, mock_namespace):
+    """Test pod collection when the backing Job has already been deleted."""
+    mock_pod = mock_k8s_api.return_value.list_namespaced_pod.return_value.items[0]
+    mock_pod.metadata.labels = {"job-name": "deleted-job"}
+
+    with patch("kubernetes.client.BatchV1Api") as mock_batch_api:
+        mock_batch_api.return_value.read_namespaced_job.side_effect = ApiException(
+            status=404, reason="Not Found"
+        )
+
+        df = get_data(namespace=mock_namespace, load_gpu_metrics=False)
+
+    assert not df.empty
+    assert len(df) == 1
+    assert df.iloc[0]["username"] == "unknown"
 
 
 @pytest.fixture
