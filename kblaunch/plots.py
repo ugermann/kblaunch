@@ -101,11 +101,29 @@ def get_gpu_metrics(v1, pod_name: str, namespace: str, permission_errors: dict) 
                 f"Failed to parse nvidia-smi output from pod {pod_name}: {output}"
             )
             return get_default_metrics()
+    except ApiException as e:
+        error_text = f"{getattr(e, 'reason', '')} {e}".lower()
+        if e.status in {404, 500, 502} or "error dialing backend" in error_text:
+            logger.debug(
+                f"Skipping GPU metrics for pod {pod_name} because the pod backend is unavailable: {e}"
+            )
+        elif "permission" in error_text:
+            permission_errors["count"] += 1
+        else:
+            logger.error(f"Failed to get GPU metrics for pod {pod_name}: {e}")
+        return get_default_metrics()
     except Exception as e:
-        if "permission" not in str(e).lower():
+        error_text = str(e).lower()
+        if (
+            "permission" not in error_text
+            and "error dialing backend" not in error_text
+            and "bad gateway" not in error_text
+            and "not found" not in error_text
+        ):
             logger.error(f"Failed to get GPU metrics for pod {pod_name}: {e}")
         else:
-            permission_errors["count"] += 1
+            if "permission" in error_text:
+                permission_errors["count"] += 1
         return get_default_metrics()
 
 

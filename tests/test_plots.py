@@ -117,6 +117,30 @@ def test_get_gpu_metrics_permission_error(mock_k8s_api):
         assert permission_errors["count"] == 1
 
 
+def test_get_gpu_metrics_ignores_deleted_pod_backend_error(mock_k8s_api):
+    """Test GPU metrics collection when the pod backend is no longer reachable."""
+    with patch("kubernetes.stream.stream") as mock_stream:
+        mock_stream.side_effect = ApiException(
+            status=500,
+            reason="Internal Server Error",
+            http_resp=MagicMock(
+                data=(
+                    '{"kind":"Status","status":"Failure","message":"'
+                    "error dialing backend: proxy error from 127.0.0.1:9345 "
+                    'while dialing 10.22.28.158:10250, code 502: 502 Bad Gateway'
+                    '","code":500}'
+                )
+            ),
+        )
+        permission_errors = {"count": 0}
+        metrics = get_gpu_metrics(
+            mock_k8s_api(), "test-pod", "informatics", permission_errors
+        )
+
+        assert metrics == get_default_metrics()
+        assert permission_errors["count"] == 0
+
+
 def test_get_data(mock_k8s_api, mock_nvidia_smi, mock_namespace):
     """Test data collection for all pods"""
     df = get_data(namespace=mock_namespace, load_gpu_metrics=True)
