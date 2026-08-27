@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
+from kubernetes.client.rest import ApiException
 
 from kblaunch.plots import (
     get_data,
@@ -116,6 +117,30 @@ def test_get_gpu_metrics_permission_error(mock_k8s_api):
         assert permission_errors["count"] == 1
 
 
+def test_get_gpu_metrics_ignores_deleted_pod_backend_error(mock_k8s_api):
+    """Test GPU metrics collection when the pod backend is no longer reachable."""
+    with patch("kubernetes.stream.stream") as mock_stream:
+        mock_stream.side_effect = ApiException(
+            status=500,
+            reason="Internal Server Error",
+            http_resp=MagicMock(
+                data=(
+                    '{"kind":"Status","status":"Failure","message":"'
+                    "error dialing backend: proxy error from 127.0.0.1:9345 "
+                    'while dialing 10.22.28.158:10250, code 502: 502 Bad Gateway'
+                    '","code":500}'
+                )
+            ),
+        )
+        permission_errors = {"count": 0}
+        metrics = get_gpu_metrics(
+            mock_k8s_api(), "test-pod", "informatics", permission_errors
+        )
+
+        assert metrics == get_default_metrics()
+        assert permission_errors["count"] == 0
+
+
 def test_get_data(mock_k8s_api, mock_nvidia_smi, mock_namespace):
     """Test data collection for all pods"""
     df = get_data(namespace=mock_namespace, load_gpu_metrics=True)
@@ -126,6 +151,23 @@ def test_get_data(mock_k8s_api, mock_nvidia_smi, mock_namespace):
     assert df.iloc[0]["username"] == "test-user"
     assert df.iloc[0]["gpu_name"] == "NVIDIA-A100-SXM4-40GB"
     assert bool(df.iloc[0]["interactive"]) is False  # Convert numpy bool to Python bool
+
+
+def test_get_data_ignores_deleted_job_lookup(mock_k8s_api, mock_namespace):
+    """Test pod collection when the backing Job has already been deleted."""
+    mock_pod = mock_k8s_api.return_value.list_namespaced_pod.return_value.items[0]
+    mock_pod.metadata.labels = {"job-name": "deleted-job"}
+
+    with patch("kubernetes.client.BatchV1Api") as mock_batch_api:
+        mock_batch_api.return_value.read_namespaced_job.side_effect = ApiException(
+            status=404, reason="Not Found"
+        )
+
+        df = get_data(namespace=mock_namespace, load_gpu_metrics=False)
+
+    assert not df.empty
+    assert len(df) == 1
+    assert df.iloc[0]["username"] == "unknown"
 
 
 @pytest.fixture
